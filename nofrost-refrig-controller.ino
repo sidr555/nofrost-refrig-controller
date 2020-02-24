@@ -1,5 +1,5 @@
 /*********
-  Rui Santos
+  Dmitry Sidorov
   Complete project details at https://RandomNerdTutorials.com  
 *********/
 
@@ -37,28 +37,31 @@
 
 
 #define BEEPS_LOOP  3
-#define BEEPS_ERROR  5
+#define BEEPS_REFRIG  2
 #define BEEPS_TEMP  3
 #define BEEPS_WIFI 4
-#define BEEPS_COMPRESSOR  7
-#define BEEPS_REFRIG  2
+#define BEEPS_ERROR  5
+#define BEEPS_COMPRESSOR  6
+#define BEEPS_START_COMPRESSOR_WITH_HEATER  7
+#define BEEPS_START_HEATER_WITH_COMPRESSOR  8
 
-#define LAST_ERROR_COUNT 10
 
-//String lastErrors[LAST_ERROR_COUNT]; 
+#define LAST_ERROR_COUNT 5
 
-uint8_t addrFreeze[8] = { 0x28, 0x2C, 0x21, 0x96, 0x5E, 0x14, 0x01, 0x0E };
-uint8_t addrRefrig[8] = { 0x28, 0x0D, 0x53, 0x95, 0x5E, 0x14, 0x01, 0xE9 };
+uint8_t addrFreeze[8] =     { 0x28, 0x2C, 0x21, 0x96, 0x5E, 0x14, 0x01, 0x0E };
+uint8_t addrRefrig[8] =     { 0x28, 0x0D, 0x53, 0x95, 0x5E, 0x14, 0x01, 0xE9 };
 uint8_t addrCompressor[8] = { 0x28, 0xDB, 0x29, 0x79, 0x97, 0x11, 0x03, 0x8A };
+uint8_t addrPCB[8] =        { 0x28, 0x05, 0x16, 0x11, 0x04, 0x00, 0x00, 0x3C };
 
 
 float tempFreeze = 0;
 float tempRefrig = 0;
 float tempCompressor = 0;
+float tempPCB = 0;
 
-float tempMinFreeze = -16;    //порог выключения компрессора
+float tempMinFreeze = -18;    //порог выключения компрессора
 float tempMaxFreeze = -12;    // порог включения компрессора
-float tempMaxCompressor = 60; // максимальная температура компрессора
+float tempMaxCompressor = 90; // максимальная температура компрессора
 float tempMaxRefrig = 0;      // минимальная температура в холодильнике, после которого начинаем пищать ошибку
 
 
@@ -73,13 +76,13 @@ unsigned long timeNow = 0;
 
 unsigned long timeStartCompressor = 0;
 unsigned long timeStopCompressor = 0;
-unsigned long timeWorkCompressor = 2 * 60 * 60 * 1000;
-unsigned long timeRestCompressor = 15 * 60 * 1000;
+unsigned long timeWorkCompressor = 2 * 60 * 60 * 1000;  // работать компрессору не более 2 часов
+unsigned long timeRestCompressor = 15 * 60 * 1000;      // после выключения компрессора дать ему отдохнуть не менее 15 минут
 
 unsigned long timeStartHeater = 0;
 unsigned long timeStopHeater = 0;
-unsigned long timeWorkHeater = 2 * 60 * 1000;
-unsigned long timeRestHeater = 4 * 60 * 60 * 1000;
+unsigned long timeWorkHeater = 2 * 60 * 1000;           // работать тэнке не более 2 минут
+unsigned long timeRestHeater = 4 * 60 * 60 * 1000;      // после чего не включать 4 часа
 
 unsigned long timeLastRequest = 0;
 unsigned long timeMaxWaitRequest = 60 * 60 * 1000; // после часа без запросов отключим Wifi, чтобы не свистел зазря
@@ -99,7 +102,15 @@ const char* password = "R838rPfr";
 
 void switchCompressor(bool on);
 void switchHeater(bool on);
-void error(const String& message, int beeps);
+void error(const String& message, uint8_t beeps);
+
+
+//struct Error {
+//  unsigned long time;
+//  uint8_t beeps;
+//  String msg;
+//}
+//Error lastErrors[LAST_ERROR_COUNT]; 
 
 
 
@@ -153,29 +164,48 @@ const char index_html[] PROGMEM = R"rawliteral(
   <p>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
     <span class="ds-labels">Freezer</span> 
-    <span id="temperature_freeze">%TEMPERATURE%</span>
+    <span id="temperature_freeze">%TEMP_FREEZE%</span>
     <sup class="units">&deg;C</sup>
   </p>
   <p>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
     <span class="ds-labels">Refrigerator</span> 
-    <span id="temperature_refrig">%TEMPERATURE%</span>
+    <span id="temperature_refrig">%TEMP_REFRIG%</span>
     <sup class="units">&deg;C</sup>
   </p>
   <p>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
-    <span class="ds-labels">Heater</span> 
-    <span id="temperature_heater">%TEMPERATURE%</span>
+    <span class="ds-labels">Compressor</span> 
+    <span id="temperature_heater">%TEMP_COMPRESSOR%</span>
     <sup class="units">&deg;C</sup>
   </p>
   <p>
-    <button class="btn" id="compressor" onClick="toggle(this)">Compressor</btn>
+    <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
+    <span class="ds-labels">Controller</span> 
+    <span id="temperature_heater">%TEMP_OUT%</span>
+    <sup class="units">&deg;C</sup>
   </p>
   <p>
-    <button class="btn btn-active" id="fan" onClick="toggle(this)">Fan</btn>
+    <button class="btn %COMPRESSOR_BUTTON_CLASS%" id="compressor" onClick="toggle(this)">Compressor (%COMPRESSOR_TIME%)</btn>
   </p>
   <p>
-    <button class="btn btn-active" id="heater" onClick="toggle(this)">Heater</btn>
+    <button class="btn %HEATER_BUTTON_CLASS%" id="heater" onClick="toggle(this)">Heater %HEATER_TIME%</btn>
+  </p>
+  
+  <p>
+    <h2>Errors</h2>
+    <ul>
+      <li class="err-msg"><div class="err-time">%errtime0%</div>%errmsg0%</li>
+      <li class="err-msg"><div class="err-time">%errtime1%</div>%errmsg1%</li>
+      <li class="err-msg"><div class="err-time">%errtime2%</div>%errmsg2%</li>
+      <li class="err-msg"><div class="err-time">%errtime3%</div>%errmsg3%</li>
+      <li class="err-msg"><div class="err-time">%errtime4%</div>%errmsg4%</li>
+      <li class="err-msg"><div class="err-time">%errtime5%</div>%errmsg5%</li>
+      <li class="err-msg"><div class="err-time">%errtime6%</div>%errmsg6%</li>
+      <li class="err-msg"><div class="err-time">%errtime7%</div>%errmsg7%</li>
+      <li class="err-msg"><div class="err-time">%errtime8%</div>%errmsg8%</li>
+      <li class="err-msg"><div class="err-time">%errtime9%</div>%errmsg9%</li>
+    </ul>
   </p>
 </body>
 <script type="text/javascript">
@@ -204,12 +234,48 @@ setInterval(function ( ) {
 </script>
 </html>)rawliteral";
 
+
+String getMinRange(unsigned long from, unsigned long to) {
+  if (from == 0) {
+    return String("0-");
+  } else if (to == 0) {
+    return String("-0");
+  }
+  return String((int)((to - from)/1000/60));
+}
+
 // Replaces placeholder with DHT values
 String processor(const String& var){
-  //Serial.println(var);
-//  if(var == "TEMPERATURE"){
-//    return readDSTemperature();
-//  }
+  if (var == "TEMP_FREEZE") return String(tempFreeze);
+  if (var == "TEMP_REFRIG") return String(tempRefrig);
+  if (var == "TEMP_COMPRESSOR") return String(tempCompressor);
+  if (var == "TEMP_OUT") return String(tempPCB);
+  if (var == "COMPRESSOR_BUTTON_CLASS"  && stateCompressor) return String("btn-active");
+  if (var == "HEATER_BUTTON_CLASS" && stateHeater) return String("btn-active");
+  if (var == "COMPRESSOR_TIME") {
+    if (stateCompressor) {
+      return String("w:") + getMinRange(timeStartCompressor, timeNow) + String("|r:") + getMinRange(timeStopCompressor,timeStartCompressor);
+    } else {
+      return String("r:") + getMinRange(timeStopCompressor, timeNow) + String("|w:") + getMinRange(timeStartCompressor,timeStopCompressor);
+    }
+  }
+  if (var == "HEATER_TIME") {
+    if (stateHeater) {
+      return String("w:") + getMinRange(timeStartHeater, timeNow) + String("|r:") + getMinRange(timeStopHeater,timeStartHeater);
+    } else {
+       return String("r:") + getMinRange(timeStopHeater, timeNow) + String("|w:") + getMinRange(timeStartHeater,timeStopHeater);
+    }
+  }
+//  if (var == "errtime0") return String(lastErrors[0].time);
+//  if (var == "errtime1") return String(lastErrors[1].time);
+//  if (var == "errtime2") return String(lastErrors[2].time);
+//  if (var == "errtime3") return String(lastErrors[3].time);
+//  if (var == "errtime4") return String(lastErrors[4].time);
+//  if (var == "errmsg0") return String(lastErrors[0].msg);
+//  if (var == "errmsg1") return String(lastErrors[1].msg);
+//  if (var == "errmsg2") return String(lastErrors[2].msg);
+//  if (var == "errmsg3") return String(lastErrors[3].msg);
+//  if (var == "errmsg4") return String(lastErrors[4].msg);
   return String();
 }
 
@@ -364,18 +430,25 @@ void switchWiFi(bool on) {
 }
 
 
-void error(const String& message, int beeps) {
-//  for (int i = LAST_ERROR_COUNT-1; i>0; i--) {
-//    lastErrors[i] = lastErrors[i-1];  
-//  }
-//  lastErrors[0] = String(timeNow) + message;
-//  
+void error(const String& message, uint8_t beeps) {
+/*  
+  for (int i = LAST_ERROR_COUNT-1; i>0; i--) {
+    if (lastErrors[i-1].time > 0) {
+      lastErrors[i].time = lastErrors[i-1].time;  
+      lastErrors[i].beeps = lastErrors[i-1].beeps;  
+      lastErrors[i].msg = lastErrors[i-1].msg;  
+    }
+  }
+  lastErrors[0].time = timeNow;
+  lastErrors[0].beeps = beeps;
+  lastErrors[0].msg = message;
+ */ 
   for (int i = 0; i<BEEPS_LOOP; i++) {
     for (int j = 0; j<beeps; j++) {
       digitalWrite(LED_ERROR, HIGH);
-      delay(200);
+      delay(50);
       digitalWrite(LED_ERROR, LOW);
-      delay(300);
+      delay(200);
     }
     delay(5000);
   }
@@ -390,10 +463,10 @@ void error(const String& message, int beeps) {
 }
 
 void switchCompressor(bool on) {
-  if (stateHeater) {
-    return error("Compressor start when heater is working", BEEPS_ERROR);
-  }
   if (on) {
+    if (stateHeater) {
+      return error("Compressor start when heater is working", BEEPS_START_COMPRESSOR_WITH_HEATER);
+    }
     digitalWrite(COMPRESSOR, LOW);
     timeStartCompressor = timeNow;
     timeStopCompressor = 0;
@@ -408,10 +481,10 @@ void switchCompressor(bool on) {
 }
 
 void switchHeater(bool on) {
-  if (stateCompressor) {
-    return error("Heater start when compressor is working", BEEPS_ERROR);
-  }
   if (on) {
+      if (stateCompressor) {
+        return error("Heater start when compressor is working", BEEPS_START_HEATER_WITH_COMPRESSOR);
+      }
       digitalWrite(HEATER, LOW);
   } else {
       digitalWrite(HEATER, HIGH);
@@ -454,6 +527,7 @@ void setup(){
   sensors.begin();
 
 //  DeviceAddress addr;
+//  Serial.println(String("Scan dev addresses: ") + String(sensors.getDeviceCount()));
 //  for (int i=0; i<sensors.getDeviceCount(); i++) {
 //    if (sensors.getAddress(addr, i)) {
 //      Serial.print("String(DS18B20 )" + String(i) + String(" addr: "));
@@ -466,54 +540,51 @@ void setup(){
 //  }
 
 
+  // Нас тарте моргнем светиками
   for(int i=0; i<3; i++) {
-    break;
     digitalWrite(LED_WIFI, HIGH);
-    delay(200);
+    delay(20);
     digitalWrite(LED_COMP, HIGH);
-    delay(200);
+    delay(20);
     digitalWrite(LED_HEAT, HIGH);
-    delay(200);
+    delay(20);
     digitalWrite(LED_ERROR, HIGH);
-  
-    delay(200);
+    delay(20);
     
     digitalWrite(LED_WIFI, LOW);
-    delay(200);
+    delay(20);
     digitalWrite(LED_COMP, LOW);
-    delay(200);
+    delay(20);
     digitalWrite(LED_HEAT, LOW);
-    delay(200);
+    delay(20);
     digitalWrite(LED_ERROR, LOW);
-    delay(200);
+    delay(20);
   }
 
-  //enableWiFi();
+  switchWiFi(true);
+
+//  tempFreeze = -10.0;
+//  tempRefrig = 2.0;
+//  tempCompressor = 36.0;
+
 }
 
 
 
 void checkTemperatureSensor(const String& id, float temperature) {
-    if (temperature == -127.00) {
-      error(String("Failed to read from DS18B20 sensor: " + id), BEEPS_TEMP);
-    } else {
-      Serial.print(id);
-      Serial.print(" temperature: ");
-      Serial.println(temperature);
-    }
+  if (temperature == -127.00) {
+    error(String("Failed to read from DS18B20 sensor: " + id), BEEPS_TEMP);
+  } else {
+    Serial.print(id);
+    Serial.print(" temperature: ");
+    Serial.println(temperature);
+  }
 }
 
 
 void loop(){
+  Serial.println("LOOP");
     if (digitalRead(WIFI_BUTTON)) {
-      if (!stateWiFi) {
-        for (int i=0; i<3; i++) {
-          error("TEST ERROR", BEEPS_WIFI);
-          stateWiFi = true;
-          delay(2000);
-        }
-      }
-      return;
       if (stateWiFi) {
         Serial.println("Wifi button OFF");
         switchWiFi(false);
@@ -523,15 +594,16 @@ void loop(){
       }
     }
 
-    return;
 
     sensors.requestTemperatures(); 
     tempFreeze = sensors.getTempC(addrFreeze);
     tempRefrig = sensors.getTempC(addrRefrig);
     tempCompressor = sensors.getTempC(addrCompressor);
+    tempPCB = sensors.getTempC(addrPCB);
     checkTemperatureSensor("Freeze", tempFreeze);
     checkTemperatureSensor("Refrig", tempRefrig);
     checkTemperatureSensor("Compressor", tempCompressor);
+    checkTemperatureSensor("PCB", tempPCB);
 
     // Проверим компрессор на перегрев
     if (tempCompressor > tempMaxCompressor) {
@@ -540,16 +612,30 @@ void loop(){
       return;
     }
 
-    // Проверим температуру в холодильнике, возможно открыта дверца
-    if (tempRefrig > tempMaxRefrig) {
-      error("Refrig temperature too high. Is door open?", BEEPS_REFRIG);
-    }
+
+//    if (stateCompressor) {
+//      Serial.println(String("compressor state is ON"));
+////      tempFreeze -= 3;
+//      
+//    } else {
+//      Serial.println(String("compressor state is OFF"));
+////      tempFreeze += 3;
+//    }
+//
+//    Serial.println(String("temp freeze") + String(tempFreeze));
+
+//    if (stateHeater) {
+//      Serial.println(String("heater state is ON"));
+//    } else {
+//      Serial.println(String("heater state is OFF"));
+//    }
 
     timeNow = millis();
     if (stateCompressor) {
       switchHeater(false);
       // проверим, что температура не ниже минимальной, иначе отключаем компрессор  
-      if (tempFreeze < tempMinFreeze) {
+      // либо когда он отработал положенное время
+      if (tempFreeze < tempMinFreeze || timeNow - timeStartCompressor > timeWorkCompressor ) {
         return switchCompressor(false);
       }
     } else {
@@ -564,14 +650,19 @@ void loop(){
       }
 
       // проверим, что температура не выше максимальной, иначе включаем компрессор  
-      if (tempFreeze > tempMaxFreeze) {
+      if (tempFreeze > tempMaxFreeze && (timeStopCompressor == 0 || timeNow - timeStopCompressor > timeRestCompressor)) {
         return switchCompressor(true);
       }
     }
 
-    if (timeNow - timeLastRequest > timeMaxWaitRequest) {
-      switchWiFi(false);
+    // Проверим температуру в холодильнике, возможно открыта дверца
+    if (!stateCompressor && tempRefrig > tempMaxRefrig ) {
+      error("Refrig temperature too high. Is door open?", BEEPS_REFRIG);
     }
 
-    delay( 5000 );
+//    if (timeNow - timeLastRequest > timeMaxWaitRequest) {
+//      switchWiFi(false);
+//    }
+
+    delay( 10000 );
 }
