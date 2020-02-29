@@ -20,15 +20,18 @@
 // Data wire is connected to GPIO 4
 #define ONE_WIRE_BUS 4
 
-#define COMPRESSOR 12 // Compressor pinout
-//#define FAN  2       // Freezer fan pinout
-#define HEATER  14       // Heater pinout
-#define WIFI_BUTTON  15       // Wifi button
+#define FAN  2              // Freezer fan pinout
+#define COMPRESSOR 12       // Compressor pinout
+#define COMPRESSOR_FAN  13  // Compressor pinout
+#define HEATER  14          // Heater pinout
+#define WIFI_BUTTON  15     // Wifi button
 
-#define LED  2       // Heater pinout
 
-#define LED_WIFI  13
-#define LED_COMP  2   
+//#define LED  2       // Blinking led pinout
+#define BLINK_LED  5       // Blinking led pinout
+
+//#define LED_WIFI  13
+//#define LED_COMP  2   
 #define LED_HEAT  5
 #define LED_ERROR  0
 
@@ -36,7 +39,8 @@
 #define WIFI_TRIES  20
 
 
-#define BEEPS_LOOP  3
+#define BEEPS_LOOP  1
+
 #define BEEPS_REFRIG  2
 #define BEEPS_TEMP  3
 #define BEEPS_WIFI 4
@@ -59,16 +63,17 @@ float tempRefrig = 0;
 float tempCompressor = 0;
 float tempPCB = 0;
 
-float tempMinFreeze = -18;    //порог выключения компрессора
-float tempMaxFreeze = -12;    // порог включения компрессора
+float tempMinFreeze = -20;    //порог выключения компрессора
+float tempMaxFreeze = -10;    // порог включения компрессора
 float tempMaxCompressor = 90; // максимальная температура компрессора
-float tempMaxRefrig = 0;      // минимальная температура в холодильнике, после которого начинаем пищать ошибку
+float tempMaxRefrig = 5;      // минимальная температура в холодильнике, после которого начинаем пищать ошибку
 
 
 bool stateCompressor = false;
 bool stateHeater = false;
 bool stateWiFi = false;
-//bool stateFan = false;
+bool stateFan = false;
+bool stateCompressorFan = false;
 //bool stateDoor1 = false;
 //bool stateDoor2 = false;
 
@@ -77,7 +82,8 @@ unsigned long timeNow = 0;
 unsigned long timeStartCompressor = 0;
 unsigned long timeStopCompressor = 0;
 unsigned long timeWorkCompressor = 2 * 60 * 60 * 1000;  // работать компрессору не более 2 часов
-unsigned long timeRestCompressor = 15 * 60 * 1000;      // после выключения компрессора дать ему отдохнуть не менее 15 минут
+unsigned long timeRestCompressor = 30 * 60 * 1000;      // после выключения компрессора дать ему отдохнуть не менее 30 минут
+unsigned long timeWorkCompressorFan = 15 * 60 * 1000;   // после выключения компрессора дать вентилятору поработать не менее 15 минут
 
 unsigned long timeStartHeater = 0;
 unsigned long timeStopHeater = 0;
@@ -176,7 +182,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   <p>
     <i class="fas fa-thermometer-half" style="color:#059e8a;"></i> 
     <span class="ds-labels">Compressor</span> 
-    <span id="temperature_heater">%TEMP_COMPRESSOR%</span>
+<span id="temperature_heater">%TEMP_COMPRESSOR%</span>
     <sup class="units">&deg;C</sup>
   </p>
   <p>
@@ -186,13 +192,13 @@ const char index_html[] PROGMEM = R"rawliteral(
     <sup class="units">&deg;C</sup>
   </p>
   <p>
-    <button class="btn %COMPRESSOR_BUTTON_CLASS%" id="compressor" onClick="toggle(this)">Compressor (%COMPRESSOR_TIME%)</btn>
+    <button class="btn %COMPRESSOR_BUTTON_CLASS%" id="compressor" onClick="switch(this)">Compressor (%COMPRESSOR_TIME%)</btn>
   </p>
   <p>
-    <button class="btn %HEATER_BUTTON_CLASS%" id="heater" onClick="toggle(this)">Heater %HEATER_TIME%</btn>
+    <button class="btn %HEATER_BUTTON_CLASS%" id="heater" onClick="switch(this)">Heater %HEATER_TIME%</btn>
   </p>
   
-  <p>
+<!--  <p>
     <h2>Errors</h2>
     <ul>
       <li class="err-msg"><div class="err-time">%errtime0%</div>%errmsg0%</li>
@@ -207,16 +213,17 @@ const char index_html[] PROGMEM = R"rawliteral(
       <li class="err-msg"><div class="err-time">%errtime9%</div>%errmsg9%</li>
     </ul>
   </p>
+  -->
 </body>
 <script type="text/javascript">
-function toggle(el) {
+function switch(el) {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
       if (this.readyState == 4 && this.status == 200) {
         //el.innerHTML = this.responseText;
       }
     };
-    xhttp.open("GET", "/toggle/" + el.id, true);
+    xhttp.open("GET", "/switch/" + el.id, true);
     xhttp.send();
 }
 setInterval(function ( ) {
@@ -285,9 +292,9 @@ void blinkDot() {
 //  Serial.println("BLINK DOT");
   for (int i = 0; i<3; i++) {
       delay(500);      
-      digitalWrite(LED, LOW);
+      digitalWrite(BLINK_LED, LOW);
       delay(100);      
-      digitalWrite(LED, HIGH);
+      digitalWrite(BLINK_LED, HIGH);
       delay(500);      
   }
 }
@@ -297,16 +304,16 @@ void blinkNum(int num) {
   if (num == 0) {
     for (int i = 0; i<3; i++) {
       delay(50);      
-      digitalWrite(LED, LOW);
+      digitalWrite(BLINK_LED, LOW);
       delay(50);      
-      digitalWrite(LED, HIGH);
+      digitalWrite(BLINK_LED, HIGH);
     }
     delay(200);      
   }
   while (num--) {
-      digitalWrite(LED, LOW);
+      digitalWrite(BLINK_LED, LOW);
       delay(100);      
-      digitalWrite(LED, HIGH);
+      digitalWrite(BLINK_LED, HIGH);
       delay(200);      
   }
 }
@@ -368,23 +375,33 @@ void runWebServer() {
 //    timeLastRequest = timeNow;
 //  });
 
-  webserver.on("/compressor/start", HTTP_GET, [](AsyncWebServerRequest *request){
-    switchCompressor(true);
+//  webserver.on("/compressor/start", HTTP_GET, [](AsyncWebServerRequest *request){
+//    switchCompressor(true);
+//    request->send_P(200, "text/plain", String(stateCompressor).c_str());
+//    timeLastRequest = timeNow;
+//  });
+//  webserver.on("/compressor/stop", HTTP_GET, [](AsyncWebServerRequest *request){
+//    switchCompressor(false);
+//    request->send_P(200, "text/plain", String(stateCompressor).c_str());
+//    timeLastRequest = timeNow;
+//  });
+  webserver.on("/switch/compressor", HTTP_GET, [](AsyncWebServerRequest *request){
+    switchCompressor(!stateCompressor);
     request->send_P(200, "text/plain", String(stateCompressor).c_str());
     timeLastRequest = timeNow;
   });
-  webserver.on("/compressor/stop", HTTP_GET, [](AsyncWebServerRequest *request){
-    switchCompressor(false);
-    request->send_P(200, "text/plain", String(stateCompressor).c_str());
-    timeLastRequest = timeNow;
-  });
-  webserver.on("/heater/start", HTTP_GET, [](AsyncWebServerRequest *request){
-    switchHeater(true);
-    request->send_P(200, "text/plain", String(stateHeater).c_str());
-    timeLastRequest = timeNow;
-  });
-  webserver.on("/heater/stop", HTTP_GET, [](AsyncWebServerRequest *request){
-    switchHeater(false);
+//  webserver.on("/heater/start", HTTP_GET, [](AsyncWebServerRequest *request){
+//    switchHeater(true);
+//    request->send_P(200, "text/plain", String(stateHeater).c_str());
+//    timeLastRequest = timeNow;
+//  });
+//  webserver.on("/heater/stop", HTTP_GET, [](AsyncWebServerRequest *request){
+//    switchHeater(false);
+//    request->send_P(200, "text/plain", String(stateHeater).c_str());
+//    timeLastRequest = timeNow;
+//  });
+  webserver.on("/switch/heater", HTTP_GET, [](AsyncWebServerRequest *request){
+    switchHeater(!stateHeater);
     request->send_P(200, "text/plain", String(stateHeater).c_str());
     timeLastRequest = timeNow;
   });
@@ -409,8 +426,8 @@ void switchWiFi(bool on) {
       Serial.println();
     
       if (stateWiFi) {
-        Serial.println(WiFi.localIP());
-        blinkIP(WiFi.localIP());
+        //Serial.println(WiFi.localIP());
+        //blinkIP(WiFi.localIP());
       } else {
         error(String("Could not connect with SSID ") + ssid + String(" and password ") + password, BEEPS_WIFI);
         
@@ -420,11 +437,13 @@ void switchWiFi(bool on) {
     }
   } else {
     if (stateWiFi) {
-      Serial.println("Disconnecting WiFi");
-      webserver.end();
-      // Disconnect Wi-Fi
-      WiFi.disconnect();
-      stateWiFi = false;
+      blinkIP(WiFi.localIP());
+
+//      Serial.println("Disconnecting WiFi");
+//      webserver.end();
+//      // Disconnect Wi-Fi
+//      WiFi.disconnect();
+//      stateWiFi = false;
     }
   }
 }
@@ -446,11 +465,11 @@ void error(const String& message, uint8_t beeps) {
   for (int i = 0; i<BEEPS_LOOP; i++) {
     for (int j = 0; j<beeps; j++) {
       digitalWrite(LED_ERROR, HIGH);
-      delay(50);
+      delay(30);
       digitalWrite(LED_ERROR, LOW);
-      delay(200);
+      delay(150);
     }
-    delay(5000);
+    delay(3000);
   }
   Serial.println("----- ERROR -----");
   Serial.print("| ");
@@ -468,26 +487,42 @@ void switchCompressor(bool on) {
       return error("Compressor start when heater is working", BEEPS_START_COMPRESSOR_WITH_HEATER);
     }
     digitalWrite(COMPRESSOR, LOW);
+//    digitalWrite(LED_COMP, HIGH);
     timeStartCompressor = timeNow;
-    timeStopCompressor = 0;
   } else {
     digitalWrite(COMPRESSOR, HIGH);
-    timeStartCompressor = 0;
+//    digitalWrite(LED_COMP, LOW);
     timeStopCompressor = timeNow;
   }
   stateCompressor = on;
   Serial.print("Compressor state: ");
   Serial.println(String(stateCompressor));
 }
+//
+//void switchCompressorFan(bool on) {
+//  if (on) {
+//    digitalWrite(COMPRESSOR_FAN, LOW);
+//  } else {
+//    digitalWrite(COMPRESSOR_FAN, HIGH);
+//  }
+//  stateCompressorFan = on;
+////  Serial.print("Compressor state: ");
+////  Serial.println(String(stateCompressor));
+//}
+
 
 void switchHeater(bool on) {
   if (on) {
-      if (stateCompressor) {
-        return error("Heater start when compressor is working", BEEPS_START_HEATER_WITH_COMPRESSOR);
-      }
-      digitalWrite(HEATER, LOW);
+    if (stateCompressor) {
+      return error("Heater start when compressor is working", BEEPS_START_HEATER_WITH_COMPRESSOR);
+    }
+    digitalWrite(HEATER, LOW);
+    digitalWrite(LED_HEAT, HIGH);
+    timeStartHeater = timeNow;
   } else {
-      digitalWrite(HEATER, HIGH);
+    digitalWrite(HEATER, HIGH);
+    digitalWrite(LED_HEAT, LOW);
+    timeStopHeater = timeNow;
   }
   stateHeater = on;
   Serial.print("Heater state: ");
@@ -507,10 +542,17 @@ void setup(){
   Serial.begin(115200);
   Serial.println("INIT CONTROLLER");
 
+//  pinMode(FAN, OUTPUT);
+//  pinMode (COMPRESSOR_FAN, OUTPUT );
+//  digitalWrite(COMPRESSOR_FAN, HIGH); // HIGH LEVEL IS OFF
+
   pinMode (COMPRESSOR, OUTPUT );
-  digitalWrite(COMPRESSOR, HIGH);
   pinMode(HEATER, OUTPUT);
-  digitalWrite(HEATER, HIGH);
+
+//  digitalWrite(FAN, HIGH);            // HIGH LEVEL IS OFF
+//  digitalWrite(COMPRESSOR_FAN, LOW); // HIGH LEVEL IS OFF
+  digitalWrite(COMPRESSOR, HIGH);     // HIGH LEVEL IS OFF
+  digitalWrite(HEATER, HIGH);         // HIGH LEVEL IS OFF
 
   pinMode (WIFI_BUTTON, INPUT);  
 
@@ -519,8 +561,8 @@ void setup(){
 //  digitalWrite(LED_COMP, HIGH);
 
   pinMode(LED_HEAT, OUTPUT);
-  pinMode(LED_COMP, OUTPUT);
-  pinMode(LED_WIFI, OUTPUT);
+//  pinMode(LED_COMP, OUTPUT);
+//  pinMode(LED_WIFI, OUTPUT);
   pinMode(LED_ERROR, OUTPUT);
 
   // Start up the DS18B20 library
@@ -542,31 +584,36 @@ void setup(){
 
   // Нас тарте моргнем светиками
   for(int i=0; i<3; i++) {
-    digitalWrite(LED_WIFI, HIGH);
-    delay(20);
-    digitalWrite(LED_COMP, HIGH);
-    delay(20);
+//    digitalWrite(LED_WIFI, HIGH);
+//    delay(20);
+//    digitalWrite(LED_COMP, HIGH);
+//    delay(20);
     digitalWrite(LED_HEAT, HIGH);
     delay(20);
     digitalWrite(LED_ERROR, HIGH);
     delay(20);
     
-    digitalWrite(LED_WIFI, LOW);
-    delay(20);
-    digitalWrite(LED_COMP, LOW);
-    delay(20);
+//    digitalWrite(LED_WIFI, LOW);
+//    delay(20);
+//    digitalWrite(LED_COMP, LOW);
+//    delay(20);
     digitalWrite(LED_HEAT, LOW);
     delay(20);
     digitalWrite(LED_ERROR, LOW);
     delay(20);
   }
 
+//  for (int i=0; i<100; i++) {
+//    digitalWrite(COMPRESSOR_FAN, LOW); // HIGH LEVEL IS OFF
+////    switchCompressorFan(true);
+//    delay(500);
+//    digitalWrite(COMPRESSOR_FAN, HIGH); // HIGH LEVEL IS OFF
+////    switchCompressorFan(false);
+//    delay(1000);
+//  }     
+
+
   switchWiFi(true);
-
-//  tempFreeze = -10.0;
-//  tempRefrig = 2.0;
-//  tempCompressor = 36.0;
-
 }
 
 
@@ -584,6 +631,7 @@ void checkTemperatureSensor(const String& id, float temperature) {
 
 void loop(){
   Serial.println("LOOP");
+
     if (digitalRead(WIFI_BUTTON)) {
       if (stateWiFi) {
         Serial.println("Wifi button OFF");
@@ -601,9 +649,9 @@ void loop(){
     tempCompressor = sensors.getTempC(addrCompressor);
     tempPCB = sensors.getTempC(addrPCB);
     checkTemperatureSensor("Freeze", tempFreeze);
-    checkTemperatureSensor("Refrig", tempRefrig);
-    checkTemperatureSensor("Compressor", tempCompressor);
-    checkTemperatureSensor("PCB", tempPCB);
+//    checkTemperatureSensor("Refrig", tempRefrig);
+//    checkTemperatureSensor("Compressor", tempCompressor);
+//    checkTemperatureSensor("PCB", tempPCB);
 
     // Проверим компрессор на перегрев
     if (tempCompressor > tempMaxCompressor) {
@@ -613,29 +661,14 @@ void loop(){
     }
 
 
-//    if (stateCompressor) {
-//      Serial.println(String("compressor state is ON"));
-////      tempFreeze -= 3;
-//      
-//    } else {
-//      Serial.println(String("compressor state is OFF"));
-////      tempFreeze += 3;
-//    }
-//
-//    Serial.println(String("temp freeze") + String(tempFreeze));
-
-//    if (stateHeater) {
-//      Serial.println(String("heater state is ON"));
-//    } else {
-//      Serial.println(String("heater state is OFF"));
-//    }
-
+    
     timeNow = millis();
     if (stateCompressor) {
       switchHeater(false);
       // проверим, что температура не ниже минимальной, иначе отключаем компрессор  
       // либо когда он отработал положенное время
-      if (tempFreeze < tempMinFreeze || timeNow - timeStartCompressor > timeWorkCompressor ) {
+      if ((tempFreeze < tempMinFreeze && tempRefrig < tempMaxRefrig) 
+        || timeNow - timeStartCompressor > timeWorkCompressor ) {
         return switchCompressor(false);
       }
     } else {
@@ -655,6 +688,14 @@ void loop(){
       }
     }
 
+////    // Включим вентилятор компрессора
+//    if (stateCompressor || (timeStopCompressor > 0 && timeNow - timeStopCompressor <= timeWorkCompressorFan)) {
+//      switchCompressorFan(true);
+//    } else {
+//      switchCompressorFan(false);
+//    }
+
+
     // Проверим температуру в холодильнике, возможно открыта дверца
     if (!stateCompressor && tempRefrig > tempMaxRefrig ) {
       error("Refrig temperature too high. Is door open?", BEEPS_REFRIG);
@@ -664,5 +705,5 @@ void loop(){
 //      switchWiFi(false);
 //    }
 
-    delay( 10000 );
+    delay( 30000 );
 }
