@@ -1,6 +1,7 @@
 /*********
   Dmitry Sidorov
   Complete project details at https://RandomNerdTutorials.com  
+  This version is not server controlled
 *********/
 
 // Import required libraries
